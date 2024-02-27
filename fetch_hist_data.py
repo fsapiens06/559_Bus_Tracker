@@ -1,14 +1,15 @@
 # This program fetchs historical bus location data from the TDX website.
 
-from api import *
+from api import app_id, app_key
 
+from tqdm import tqdm
 import csv
 import requests
 from pprint import pprint
 import json
 from datetime import date, timedelta
+from concurrent.futures import ThreadPoolExecutor
 import os
-import threading
 from memory_profiler import profile
 import gc
 
@@ -21,10 +22,7 @@ auth_url = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-
 data_url_format = "https://tdx.transportdata.tw/api/historical/v2/Historical/Bus/RealTimeNearStop/City/Taipei?Dates={}&%24format=CSV"
 output_dir = "hist_loc_data/"
 
-MAX_THREADS = 8
-
-semaphore = threading.Semaphore(value=MAX_THREADS)
-
+MAX_WORKERS = 1
 
 class Auth():
 
@@ -61,43 +59,42 @@ class Data():
         }
 
 
-# fetch data from TDX server and return
-def fetch_data(data_date):
+# fetch data from TDX server, and save data into csv file
+def fetch_n_save(data_date, tried_auth=0):
     data_url = data_url_format.format(data_date.isoformat())
     global auth_response
     try:
         d = Data(app_id, app_key, auth_response)
-        data_response = requests.get(data_url, headers=d.get_data_header())
+        data_response = requests.get(data_url, headers=d.get_data_header(), stream=True)
+        print(data_response.headers)
     except:
-        a = Auth(app_id, app_key)
-        auth_response = requests.post(auth_url, a.get_auth_header())
-        print("Authentication requested: {}".format(auth_response))
-        try:
-            d = Data(app_id, app_key, auth_response)
-            data_response = requests.get(data_url, headers=d.get_data_header())
-        except:
-            print("Download Error: {}".format(data_date.isoformat()))
+        # retry authentication
+        if not tried_auth:
+            a = Auth(app_id, app_key)
+            auth_response = requests.post(auth_url, a.get_auth_header())
+            print("Authentication requested: {}".format(auth_response))
+            return fetch_n_save(data_date, 1)
         else:
-            return data_response
+            print("Download Error: {}".format(data_date.isoformat()))
+            raise
     else:
-        return data_response
-
-# write fetched data into csv file
-
-
-def save_csv(data, file_path):
-    try:
-        with open(file_path, mode='w', encoding='utf8') as file:
-            file.write(data)
-    except:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        print("File corrupted and deleted: {}".format(file_path))
-        raise
+        file_path = output_dir + ("{}.csv".format(data_date.isoformat()))
+        if 1:
+            with open(file_path, 'wb') as file:
+                for data in tqdm(
+                desc=file_path,
+                unit='iB',
+                unit_scale=True,
+                unit_divisor=1024):
+                    file.write(data)
+        if 0:
+            raise
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            print("File corrupted and deleted: {}".format(file_path))
+            raise
 
 # fetch historic location data from TDX server on a specific date and save as .csv file, if data not exist
-
-
 def check_n_get_data(data_date, downloaded_list):
     file_path = output_dir + ("{}.csv".format(data_date.isoformat()))
 
@@ -111,21 +108,15 @@ def check_n_get_data(data_date, downloaded_list):
                 data_date.isoformat()))
         # create new files
         print("File starts downloading: {}".format(data_date.isoformat()))
-        fetched_data = fetch_data(data_date).text
-        save_csv(fetched_data, file_path)
+        fetch_n_save(data_date)
         print("File successfully downloaded: {}".format(data_date.isoformat()))
         del fetched_data
-
         # append to successfully downloaded list
         downloaded_list.append(data_date.isoformat())
         list_file_path = output_dir + "downloaded_list.csv"
         with open(list_file_path, mode='a') as file:
             writer = csv.writer(file)
             writer.writerow([data_date.isoformat()])
-
-    # allow next thread to start
-    semaphore.release()
-
 
 def get_downloaded_list():
     list_file_path = output_dir + "downloaded_list.csv"
@@ -136,7 +127,8 @@ def get_downloaded_list():
             for row in reader:
                 downloaded_list.append(row)
     except:
-        print("Dowloaded list not found!")
+        print("Dowloaded list not found at path: {}".format(list_file_path))
+        raise
         return []
     print("Downloaded list dectected.")
     return downloaded_list
@@ -148,23 +140,12 @@ def auto_fetch_files(start_date, end_date):
     downloaded_list = get_downloaded_list()
 
     # multitasking download
-    threads = []
     date_processing = start_date
     while date_processing < end_date:
-        print("active threads: {}".format(len(threads)))
-        semaphore.acquire()
-        thread = threading.Thread(target=check_n_get_data, args=(
-            date_processing, downloaded_list,))
-        threads.append(thread)
-        thread.start()
-
+        executor.submit(check_n_get_data, date_processing, downloaded_list)
+        
         # get data from the next day
         date_processing += timedelta(days=1)
-
-    # wait all threads to finish
-    for thread in threads:
-        thread.join()
-
 
 if __name__ == "__main__":
     # authentication
@@ -172,5 +153,8 @@ if __name__ == "__main__":
     a = Auth(app_id, app_key)
     auth_response = requests.post(auth_url, a.get_auth_header())
     print("Authentication requested: {}".format(auth_response))
-
+    
+    # multiprocessing
+    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
     auto_fetch_files(start_date, end_date)
+    executor.shutdown()
