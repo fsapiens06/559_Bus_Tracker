@@ -22,7 +22,7 @@ auth_url = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-
 data_url_format = "https://tdx.transportdata.tw/api/historical/v2/Historical/Bus/RealTimeNearStop/City/Taipei?Dates={}&%24format=CSV"
 output_dir = "hist_loc_data/"
 
-MAX_WORKERS = 1
+MAX_WORKERS = 12
 
 class Auth():
 
@@ -66,7 +66,7 @@ def fetch_n_save(data_date, tried_auth=0):
     try:
         d = Data(app_id, app_key, auth_response)
         data_response = requests.get(data_url, headers=d.get_data_header(), stream=True)
-        print(data_response.headers)
+    
     except:
         # retry authentication
         if not tried_auth:
@@ -77,22 +77,33 @@ def fetch_n_save(data_date, tried_auth=0):
         else:
             print("Download Error: {}".format(data_date.isoformat()))
             raise
+            return 1
+
     else:
         file_path = output_dir + ("{}.csv".format(data_date.isoformat()))
-        if 1:
-            with open(file_path, 'wb') as file:
-                for data in tqdm(
-                desc=file_path,
+
+        # write csv file with tqdm progress bar
+        try:
+            with open(file_path, mode="wb") as file, tqdm(
+                desc=data_date.isoformat(),
                 unit='iB',
                 unit_scale=True,
-                unit_divisor=1024):
-                    file.write(data)
-        if 0:
+                unit_divisor=1024,
+                leave=True,
+                smoothing=True,
+                colour='green',
+            ) as bar:
+                for data in data_response.iter_content(chunk_size=1024):
+                    size = file.write(data)
+                    bar.update(size)
+        except:
+            # download failed
             raise
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            print("File corrupted and deleted: {}".format(file_path))
-            raise
+            return 1
+        else:
+            # job done succeessfully
+            return 0
+
 
 # fetch historic location data from TDX server on a specific date and save as .csv file, if data not exist
 def check_n_get_data(data_date, downloaded_list):
@@ -108,15 +119,24 @@ def check_n_get_data(data_date, downloaded_list):
                 data_date.isoformat()))
         # create new files
         print("File starts downloading: {}".format(data_date.isoformat()))
-        fetch_n_save(data_date)
-        print("File successfully downloaded: {}".format(data_date.isoformat()))
-        del fetched_data
-        # append to successfully downloaded list
-        downloaded_list.append(data_date.isoformat())
-        list_file_path = output_dir + "downloaded_list.csv"
-        with open(list_file_path, mode='a') as file:
-            writer = csv.writer(file)
-            writer.writerow([data_date.isoformat()])
+        
+        # download file
+        if not (fetch_n_save(data_date)):
+            print("File successfully downloaded: {}".format(data_date.isoformat()))
+            # append to successfully downloaded list
+            downloaded_list.append(data_date.isoformat())
+            list_file_path = output_dir + "downloaded_list.csv"
+            with open(list_file_path, mode='a') as file:
+                writer = csv.writer(file)
+                writer.writerow([data_date.isoformat()])
+
+        # clean up messed file
+        else:
+            print("Download failed: {}".format(file_path))
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print("File corrupted and deleted: {}".format(file_path))
+
 
 def get_downloaded_list():
     list_file_path = output_dir + "downloaded_list.csv"
@@ -149,7 +169,7 @@ def auto_fetch_files(start_date, end_date):
 
 if __name__ == "__main__":
     # authentication
-    print("hi")
+    print("Hi there!")
     a = Auth(app_id, app_key)
     auth_response = requests.post(auth_url, a.get_auth_header())
     print("Authentication requested: {}".format(auth_response))
