@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import os
 from memory_profiler import profile
+import re
 import gc
 
 gc.enable()
@@ -141,16 +142,25 @@ def check_n_get_data(data_date, downloaded_list):
 def get_downloaded_list():
     list_file_path = output_dir + "downloaded_list.csv"
     downloaded_list = []
+    date_format = re.compile(r'\[\'\d{4}-\d{2}-\d{2}\'\]')
     try:
         with open(list_file_path, mode='r') as file:
-            reader = csv.reader(file)
+            reader = csv.reader((row.replace('\0', '') for row in file))
             for row in reader:
-                downloaded_list.append(row)
+                if date_format.match(str(row)):
+                    downloaded_list.append(row)
     except:
         print("Dowloaded list not found at path: {}".format(list_file_path))
         raise
         return []
-    print("Downloaded list dectected.")
+    else:
+        print("Downloaded list dectected.")
+        # tidy up file
+        downloaded_list.sort()
+        with open(list_file_path), mode='w') as file:
+            writer = csv.writer(file)
+            writer.writerows(downloaded_list)
+        print("Downloaded list cleaned up.")
     return downloaded_list
 
 
